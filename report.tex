@@ -1,0 +1,109 @@
+\documentclass[12pt]{article}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{xcolor}
+
+\geometry{margin=1in}
+
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{remark}{Remark}
+
+\title{\textbf{Flood Forecasting as a Least Squares Problem}\\
+\large 18.0851: Computational Science & Engineering}
+\author{Rutvik Deshpande}
+\date{}
+
+\begin{document}
+
+\maketitle
+% ============================================================
+\section{Problem Setup}
+
+A flood wave entering a river takes days to travel downstream. If we can observe water levels at upstream gauges today, we have a mathematical signal about what will happen at a downstream location in the future. The question is: how do we turn those observations into a prediction?
+
+We have $n$ days of historical data: daily streamflow at a target gauge and at several upstream gauges, plus precipitation measurements. The goal is to find a linear function of today's observations that best predicts flow at the target gauge $k$ days from now using least squares. Matrix $A$ is built from observations, a vector $b$ from future flow values, to solve;
+
+\[
+\min_{x \in \mathbb{R}^p} \|Ax - b\|_2^2.
+\]
+The solution $\hat{x}$ is a vector of weights. Applied to any new day's observations, it gives a forecast.
+
+% ============================================================
+\section{Building the Design Matrix}
+
+\subsection{Features and Normalization}
+
+On each day $t$, various set of measurements are observed. After preprocessing, these become a feature vector $a_t \in \mathbb{R}^p$. The features used are:
+\begin{itemize}
+    \item Log-transformed flow at the target gauge: $\log(1 + Q_{\text{target}}(t))$
+    \item Daily and rolling precipitation sums (7-day, 14-day)
+    \item Log-transformed flow at each upstream gauge: $\log(1 + Q_u(t))$ for $u \in \mathcal{U}$
+    \item Sub-catchment precipitation between consecutive gauge pairs
+\end{itemize}
+
+The streamflow values were log-transformed because daily discharge is highly skewed and can vary across several orders of magnitude. This transformation reduces the influence of extreme flood peaks, preventing a small number of large events from dominating the squared-error loss and making the model training more stable.
+
+All features are z-score normalized using training-set statistics. For each feature $j$:
+\[
+\tilde{a}_{tj} = \frac{a_{tj} - \mu_j}{\sigma_j}
+\]
+where $\mu_j$ and $\sigma_j$ are the training mean and standard deviation. This ensures every feature lives on the same scale before forming the matrix product $A^T A$.
+
+\subsection{The Design Matrix}
+
+Stack $n$ normalized feature vectors as rows, and prepend a column of ones for the intercept:
+\[
+A = \begin{bmatrix}
+1 & \tilde{a}_{1,1} & \tilde{a}_{1,2} & \cdots & \tilde{a}_{1,p-1} \\
+1 & \tilde{a}_{2,1} & \tilde{a}_{2,2} & \cdots & \tilde{a}_{2,p-1} \\
+\vdots & \vdots & \vdots & \ddots & \vdots \\
+1 & \tilde{a}_{n,1} & \tilde{a}_{n,2} & \cdots & \tilde{a}_{n,p-1}
+\end{bmatrix}
+\in \mathbb{R}^{n \times p}
+\]
+
+The target vector collects the log-flow $k$ days ahead:
+\[
+b = \begin{bmatrix} \log(1 + Q_{\text{target}}(t_1 + k)) \\ \log(1 + Q_{\text{target}}(t_2 + k)) \\ \vdots \\ \log(1 + Q_{\text{target}}(t_n + k)) \end{bmatrix} \in \mathbb{R}^n
+\]
+
+In this project, four separate least-squares systems are constructed, one for each forecast horizon 
+\(k \in \{1,2,3,4\}\). The feature matrix \(A\) remains fixed across horizons, while the target vector 
+\(b\) changes depending on how many days ahead the model is asked to predict.
+
+For the Tar River dataset, the training set contains \(n = 7{,}178\) daily observations and 
+\(p = 26\) model parameters, corresponding to 25 input features plus an intercept term. Since the 
+number of observations is much larger than the number of unknown parameters, the system is 
+overdetermined. In practice, this means there is no exact solution that satisfies every daily 
+observation perfectly, so the model estimates the set of coefficients that best fits the data in 
+the least-squares sense.
+% ============================================================
+\section{Least Squares}
+
+We have far more equations than unknowns: the design matrix $A$ has $n \approx 7{,}000$ rows (one per training day) and only $p = 26$ columns (one per feature). No vector $x$ exists that satisfies $Ax = b$ exactly. Some residual is unavoidable. The question becomes which choice of $x$ leaves the smallest residual, and how we should measure "smallest."
+
+We measure it by the sum of squared errors. For each training day $i$, the model produces a prediction $a_i^T x$, and we compare it to the observed value $b_i$. Squaring the per-day error and summing across days gives:
+\[
+f(x) = \|Ax - b\|_2^2 = (Ax - b)^T(Ax - b)
+\]
+Squaring is a deliberate choice. It penalizes large errors disproportionately, which matters here: missing a flood event by 5{,}000 cfs is much worse than ten ordinary days each off by 500 cfs. It also makes $f(x)$ smooth and differentiable, so we can find the minimum with calculus rather than search.
+
+Expanding the product gives a clean quadratic in $x$:
+\[
+f(x) = x^T A^T A x - 2 b^T A x + b^T b
+\]
+The function is a paraboloid bowl: positive semi-definite quadratic, single minimum, no local traps. The minimum is found by setting the gradient to zero:
+\[
+\nabla_x f(x) = 2 A^T A x - 2 A^T b = 0
+\]
+which rearranges into the \textbf{normal equations}:
+\[
+\boxed{A^T A \, \hat{x} = A^T b}
+\]
+
+This is the central equation of the project. It converts an unsolvable system of 7{,}000 equations into a solvable system of 26. The solution $\hat{x}$ is the vector of feature weights that minimizes total squared prediction error across the entire training record.
