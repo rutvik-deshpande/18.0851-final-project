@@ -62,15 +62,6 @@ Form $A^TA$ (26×26), then solve $(A^TA)\hat{x} = A^Tb$. Fast, but squaring the 
 
 **2. QR factorization**
 Factor $A = QR$, solve $R\hat{x} = Q^Tb$. More stable — avoids forming $A^TA$. This is what `numpy.linalg.lstsq` uses internally.
----
-
-## Weighted Least Squares for Flood Days
-
-Standard least squares weights every day equally. Flood days are 5% of the data — the solver ignores them. We fix this with a diagonal weight matrix $W$:
-
-$$\min_x \|W^{1/2}(Ax - b)\|^2 \quad \Leftrightarrow \quad \min_x \|(WA)x - Wb\|^2$$
-
-where $W_{ii} = 10$ on flood days, $W_{ii} = 1$ otherwise. The weighted normal equations become $(A^TWA)\hat{x} = A^TWb$. Same solve, reweighted data.
 
 ---
 
