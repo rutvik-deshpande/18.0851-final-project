@@ -93,3 +93,52 @@ Three forecasting horizons of interest: $t+1$ (easy), $t+2$, $t+4$ (hard). Does 
 
 ---
 
+
+# 18.0851 Final Project — Predicting River Floods with Least Squares
+
+## What I'm doing
+
+I'm predicting how high a river will get a few days from now, using sensor readings from today.
+
+The river I picked (Tar River, North Carolina) has 8 water-level sensors along it. Water flows past the upstream sensors first and reaches the last sensor (my target) a few days later. So if today's readings at the upstream sensors are unusually high, the target sensor will likely be high in a few days.
+
+I want a formula that turns "today's 25 sensor readings" into "predicted water level 4 days from now."
+
+## How this becomes a math problem
+
+I have 31 years of daily history — about 7,000 days. For each day, I know:
+- The 25 sensor readings on that day → these become a row of a matrix $A$
+- What the target sensor read 4 days later → this becomes an entry of a vector $b$
+
+Stack everything together:
+- $A$ is a $7{,}000 \times 26$ matrix (25 features + a constant column for the intercept)
+- $b$ is a vector of length $7{,}000$
+
+I want to find weights $x \in \mathbb{R}^{26}$ such that $Ax \approx b$. There's no exact solution (way more equations than unknowns), so I solve the least squares problem:
+
+$$\min_{x} \; \|Ax - b\|^2$$
+
+## The math I actually use
+
+1. **Normal equations:** $A^TA \, \hat{x} = A^T b$, derived by setting the gradient of $\|Ax-b\|^2$ to zero
+2. **QR factorization:** $A = QR$, then solve $R\hat{x} = Q^Tb$ — more numerically stable than normal equations
+3. **Weighted least squares:** I care more about flood days than normal days, so I solve $A^TWA\,\hat{x} = A^TWb$ with a diagonal weight matrix $W$
+4. **Condition number analysis:** $\kappa(A) = \sigma_{\max}/\sigma_{\min}$ from the singular values — tells me how much measurement noise gets amplified
+5. **Residuals:** $r_i = b_i - a_i^T\hat{x}$ on validation data — I use the spread of these to build prediction intervals around each forecast
+
+## Why this is interesting mathematically
+
+- The sensors are correlated (nearby sensors tend to move together) → the columns of $A$ are nearly linearly dependent → high condition number → motivates using QR over the normal equations
+- The data is unbalanced (flood days are 5% of the data, but they're the ones I care about) → standard least squares ignores them → motivates weighted least squares
+- I compare three different solvers on the same problem and check they agree to machine precision
+
+## Files
+
+```
+data/                              # 31 years of preprocessed sensor data
+notebooks/linear_least_squares.ipynb   # all the math, in code
+```
+
+## Reproducing
+
+Open the notebook and run all cells. It loads the parquet files in `data/`, builds the design matrix, solves the system three different ways, and saves the resulting predictions plus interval coverage statistics.

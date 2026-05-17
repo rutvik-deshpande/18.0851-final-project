@@ -1,4 +1,4 @@
-\documentclass[12pt]{article}
+\documentclass[10pt, twocolumn]{article}
 
 \usepackage{amsmath, amssymb, amsthm}
 \usepackage{booktabs}
@@ -6,104 +6,409 @@
 \usepackage{hyperref}
 \usepackage{graphicx}
 \usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{abstract}
+\usepackage{cite}
 
-\geometry{margin=1in}
+\geometry{
+  top=1in,
+  bottom=1in,
+  left=0.75in,
+  right=0.75in,
+  columnsep=0.25in
+}
+
+% Compact section headings
+\titleformat{\section}{\normalsize\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\itshape}{\thesubsection}{0.5em}{}
+\titlespacing{\section}{0pt}{8pt}{4pt}
+\titlespacing{\subsection}{0pt}{6pt}{2pt}
+
+% Abstract formatting
+\renewcommand{\abstractnamefont}{\normalfont\bfseries\small}
+\renewcommand{\abstracttextfont}{\normalfont\small}
+\setlength{\absleftindent}{0pt}
+\setlength{\absrightindent}{0pt}
 
 \newtheorem{definition}{Definition}
 \newtheorem{theorem}{Theorem}
 \newtheorem{remark}{Remark}
 
-\title{\textbf{Flood Forecasting as a Least Squares Problem}\\
-\large 18.0851: Computational Science & Engineering}
+\title{
+  \vspace{-0.5em}
+  {\large\bfseries Flood Forecasting as a Least Squares Problem}\\[4pt]
+  {\normalsize 18.0851: Computational Science \& Engineering}
+  \vspace{-0.5em}
+}
 \author{Rutvik Deshpande}
 \date{}
 
 \begin{document}
 
-\maketitle
+\twocolumn[
+  \maketitle
+
+]
+
 % ============================================================
 \section{Problem Setup}
 
-A flood wave entering a river takes days to travel downstream. If we can observe water levels at upstream gauges today, we have a mathematical signal about what will happen at a downstream location in the future. The question is: how do we turn those observations into a prediction?
+The flood forecasting system implemented today relies on observing river gauges, which continuously measure the streamflow in cubic feet per second (cfs) \cite{usgs_nwis}. Each gauge has designated flood threshold assigned, when the streamflow exceeds this level, warning signals are issued to downstream communities \cite{wmo2011}. These systems are largely reactive, as they trigger on local conditions at individual gauges, but a flood wave entering a river takes several days to propagate from upstream to a downstream monitoring site \cite{lighthill1955, chow1988}. This lag in time provides an opportunity, upstream observations made today carry information about what a downstream gauge will record in the next few days. 
 
-We have $n$ days of historical data: daily streamflow at a target gauge and at several upstream gauges, plus precipitation measurements. The goal is to find a linear function of today's observations that best predicts flow at the target gauge $k$ days from now using least squares. Matrix $A$ is built from observations, a vector $b$ from future flow values, to solve;
+This report demonstrates a multi-day river flood forecasting as a linear least squares problem. The experiment uses historical streamflow and precipitation records across network of gauges along the Tar river basin, NC. The goal is to find a linear function of today's upstream observations that best predicts flow at a target gauge $k$ days from now. The matrix $A$ is built using observational features and a vector $b$ containing log-transformed flow at a downstream target gauge $k$ days ahead, for horizons $k \in \{1,2,3,4\}$, to solve: 
 
 \[
-\min_{x \in \mathbb{R}^p} \|Ax - b\|_2^2.
+  \min_{x \in \mathbb{R}^p} \|Ax - b\|_2^2.
 \]
-The solution $\hat{x}$ is a vector of weights. Applied to any new day's observations, it gives a forecast.
+
+This least squares problem is solved using two methods; normal equations and QR factorization. The flood days are roughly $5\%$ of the data, so these are up-weighted by a factor of 10 using weighted least squares to prevent the solver from ignoring rare extreme events. Residuals on a held-out validation set generate empirical prediction intervals without distributional assumptions.
 
 % ============================================================
 \section{Building the Design Matrix}
 
 \subsection{Features and Normalization}
-
-On each day $t$, various set of measurements are observed. After preprocessing, these become a feature vector $a_t \in \mathbb{R}^p$. The features used are:
-\begin{itemize}
-    \item Log-transformed flow at the target gauge: $\log(1 + Q_{\text{target}}(t))$
-    \item Daily and rolling precipitation sums (7-day, 14-day)
-    \item Log-transformed flow at each upstream gauge: $\log(1 + Q_u(t))$ for $u \in \mathcal{U}$
-    \item Sub-catchment precipitation between consecutive gauge pairs
+For this problem, real world precipitation, river gauge and network data are used at a daily time scale. The datasets were specifically chosen  such that they represent both local hydrological conditions at each gauge and upstream information \cite{usgs_nwis}. On each day $t$, the following measurements are observed and preprocessed into a feature
+vector $a_t \in \mathbb{R}^p$:
+\begin{itemize}\setlength\itemsep{1pt}
+  \item Log-transformed flow at the target gauge: $\log(1 + Q_{\text{target}}(t))$
+  \item Daily and rolling precipitation sums (7-day, 14-day) are antecedent moisture proxies gathered from total accumulated precipitation.
+  \item Log-transformed flow at each upstream gauge: $\log(1 + Q_u(t))$ for $u \in \mathcal{U}$
+  \item Sub-catchment precipitation between consecutive gauge pairs in the network order, daily and accumulated precipitation, spatially averaged over the sub-catchment polygon between those gauges.
 \end{itemize}
 
-The streamflow values were log-transformed because daily discharge is highly skewed and can vary across several orders of magnitude. This transformation reduces the influence of extreme flood peaks, preventing a small number of large events from dominating the squared-error loss and making the model training more stable.
+Log transformation is applied to the streamflow values as the daily discharge is highly skewed and varies across several orders of magnitude. This reduces the influence of extreme flood peaks, preventing a small number of large events from dominating the squared-error loss.
 
 All features are z-score normalized using training-set statistics. For each feature $j$:
 \[
-\tilde{a}_{tj} = \frac{a_{tj} - \mu_j}{\sigma_j}
+  \tilde{a}_{tj} = \frac{a_{tj} - \mu_j}{\sigma_j}
 \]
-where $\mu_j$ and $\sigma_j$ are the training mean and standard deviation. This ensures every feature lives on the same scale before forming the matrix product $A^T A$.
+where $\mu_j$ and $\sigma_j$ are the training mean and standard deviation.
+This ensures every feature lives on the same scale before forming $A^T A$.
 
 \subsection{The Design Matrix}
+The matrix $A$ consists of  $n$ normalized feature vectors stacked as rows, and a column of ones is added for the intercept. 
 
-Stack $n$ normalized feature vectors as rows, and prepend a column of ones for the intercept:
 \[
 A = \begin{bmatrix}
-1 & \tilde{a}_{1,1} & \tilde{a}_{1,2} & \cdots & \tilde{a}_{1,p-1} \\
-1 & \tilde{a}_{2,1} & \tilde{a}_{2,2} & \cdots & \tilde{a}_{2,p-1} \\
-\vdots & \vdots & \vdots & \ddots & \vdots \\
-1 & \tilde{a}_{n,1} & \tilde{a}_{n,2} & \cdots & \tilde{a}_{n,p-1}
+  1 & \tilde{a}_{1,1} & \cdots & \tilde{a}_{1,p-1} \\
+  1 & \tilde{a}_{2,1} & \cdots & \tilde{a}_{2,p-1} \\
+  \vdots & \vdots & \ddots & \vdots \\
+  1 & \tilde{a}_{n,1} & \cdots & \tilde{a}_{n,p-1}
 \end{bmatrix}
 \in \mathbb{R}^{n \times p}
 \]
-
-The target vector collects the log-flow $k$ days ahead:
+The target vector collects log-flow $k$ days ahead:
 \[
-b = \begin{bmatrix} \log(1 + Q_{\text{target}}(t_1 + k)) \\ \log(1 + Q_{\text{target}}(t_2 + k)) \\ \vdots \\ \log(1 + Q_{\text{target}}(t_n + k)) \end{bmatrix} \in \mathbb{R}^n
+b = \bigl[\log(1 + Q_{\text{target}}(t_i + k))\bigr]_{i=1}^n \in \mathbb{R}^n.
 \]
 
-In this project, four separate least-squares systems are constructed, one for each forecast horizon 
-\(k \in \{1,2,3,4\}\). The feature matrix \(A\) remains fixed across horizons, while the target vector 
-\(b\) changes depending on how many days ahead the model is asked to predict.
+Four separate linear systems are constructed, one per horizon $k \in \{1,2,3,4\}$. The matrix $A$ is fixed across horizons; only the vector $b$ changes. The timeseries data for Tar river has $n = 7{,}178$ days, $p = 26$ input features (25 features $+1$ intercept).
+The system is overdetermined by a factor of $\approx 276$, so no exact solution exists, suggesting the least-squares solution is the best attainable fit for this problem.
 
-For the Tar River dataset, the training set contains \(n = 7{,}178\) daily observations and 
-\(p = 26\) model parameters, corresponding to 25 input features plus an intercept term. Since the 
-number of observations is much larger than the number of unknown parameters, the system is 
-overdetermined. In practice, this means there is no exact solution that satisfies every daily 
-observation perfectly, so the model estimates the set of coefficients that best fits the data in 
-the least-squares sense.
 % ============================================================
 \section{Least Squares}
 
-We have far more equations than unknowns: the design matrix $A$ has $n \approx 7{,}000$ rows (one per training day) and only $p = 26$ columns (one per feature). No vector $x$ exists that satisfies $Ax = b$ exactly. Some residual is unavoidable. The question becomes which choice of $x$ leaves the smallest residual, and how we should measure "smallest."
+\subsection{Derivation of the Normal Equations}
+In this problem, as $n \gg p$, no $x$ satisfies $Ax = b$ exactly, so the fit is measured by total squared error. For each training day $i$,
+the model produces a prediction $a_i^T x$ which is compared to the observed value $b_i$.
+Summing squared per-day errors gives:
+\[
+  f(x) = \|Ax - b\|_2^2 = (Ax - b)^T(Ax - b).
+\]
+Squaring penalizes large errors disproportionately, missing a flood by 5,000 cfs is far worse than ten ordinary days each off by 500 cfs, and makes $f(x)$ smooth and differentiable. Expanding:
+\[
+  f(x) = x^T A^T A x - 2\, b^T A x + b^T b.
+\]
+This is a paraboloid bowl, positive semi-definite quadratic, single minimum, no local traps. By setting the gradient to zero:
+\[
+  \nabla_x f(x) = 2 A^T A x - 2 A^T b = 0,
+\]
+gives the \textbf{normal equations}:
+\[
+  \boxed{A^T A\, \hat{x} = A^T b.}
+\]
+This converts an unsolvable $7{,}178 \times 26$ system into a solvable $26 \times 26$ linear system.
 
-We measure it by the sum of squared errors. For each training day $i$, the model produces a prediction $a_i^T x$, and we compare it to the observed value $b_i$. Squaring the per-day error and summing across days gives:
-\[
-f(x) = \|Ax - b\|_2^2 = (Ax - b)^T(Ax - b)
-\]
-Squaring is a deliberate choice. It penalizes large errors disproportionately, which matters here: missing a flood event by 5{,}000 cfs is much worse than ten ordinary days each off by 500 cfs. It also makes $f(x)$ smooth and differentiable, so we can find the minimum with calculus rather than search.
+\subsection{Three Solvers}
 
-Expanding the product gives a clean quadratic in $x$:
+The least-squares problem can be solved several ways and they all return the same answer on well-conditioned data. But they might differ in how much numerical error they accumulate when the features are correlated, which happens to be the situation in this problem, as the upstream gauges along the same river tend to rise and fall together \cite{trefethen1997, golub2013}.
+
+\paragraph{Normal equations.}
+Form $A^TA$ explicitly and solve with Cholesky factorization:
 \[
-f(x) = x^T A^T A x - 2 b^T A x + b^T b
+  \hat{x} = (A^TA)^{-1} A^T b.
 \]
-The function is a paraboloid bowl: positive semi-definite quadratic, single minimum, no local traps. The minimum is found by setting the gradient to zero:
+This method follows most directly from the gradient derivation, so it is a natural first approach. It works well when the columns of matrix \(A\) are independent, but it becomes less reliable when the features are highly correlated.
+
+That issue appears in this dataset because nearby upstream gauges often respond to the same rainfall event. Their flow records rise and fall together, so the corresponding columns of \(A\) can become nearly parallel. Forming \(A^T A\) makes this problem worse: the small differences between similar features become harder to resolve numerically, and roundoff error can affect the final coefficients.
+
+\paragraph{QR factorization.}
+Factor $A = QR$ where $Q \in \mathbb{R}^{n \times p}$ has orthonormal columns and
+$R \in \mathbb{R}^{p \times p}$ is upper triangular. Substituting $A = QR$ into the
+normal equations and using $Q^TQ = I$:
 \[
-\nabla_x f(x) = 2 A^T A x - 2 A^T b = 0
+  R^T Q^T Q R\, \hat{x} = R^T Q^T b \;\implies\; R\hat{x} = Q^T b.
 \]
-which rearranges into the \textbf{normal equations}:
+This is solved using back-substitution. Because $Q$ is orthonormal by construction,
+$A^TA$ never needs to be formed explicitly, the problematic compression step is bypassed
+entirely. QR is used as the primary solver throughout this project.
+
+\paragraph{Singular Value Decomposition (SVD)}
+Factor $A = U \Sigma V^T$ where $\Sigma = \operatorname{diag}(\sigma_1, \ldots, \sigma_p)$
+contains the singular values. The least-squares solution becomes:
 \[
-\boxed{A^T A \, \hat{x} = A^T b}
+  \hat{x} = V \Sigma^{-1} U^T b = \sum_{i=1}^{p} \frac{u_i^T b}{\sigma_i} v_i.
 \]
 
-This is the central equation of the project. It converts an unsolvable system of 7{,}000 equations into a solvable system of 26. The solution $\hat{x}$ is the vector of feature weights that minimizes total squared prediction error across the entire training record.
+The SVD can be used to cross check as all the solvers should return the same $\hat{x}$, and verifying this to machine precision confirms the implementation is correct. Beyond verification, the singular value decomposition could also reveal which directions
+in feature space carry the most variance in $b$, which could be used later for feature attribution via QR vector aggregation.
+
+% ============================================================
+\section{Weighted Least Squares}
+As mentioned earlier the flood days account for close to $5\%$ of total data, but the standard least squares weighs everyday equally. The unweighted solver effectively ignores this aspect of data, minimizing average error across 7,000 routine days.
+This is fixed by assigning each day a weight $w_i$ via a diagonal matrix $W = \operatorname{diag}(w_i)$:
+\[
+  \min_x \|W^{1/2}(Ax - b)\|_2^2 \;\Longleftrightarrow\; \min_x \|\tilde{A}x - \tilde{b}\|_2^2,
+\]
+where $\tilde{A} = W^{1/2}A$ and $\tilde{b} = W^{1/2}b$.
+This is equivalent to the weighted normal equations:
+\[
+  (A^T W A)\,\hat{x} = A^T W b.
+\]
+
+The flood days (flow exceeding the 95th percentile, 8,641 cfs at the target gauge) are assigned a weight, $w_i = 10$ and $w_i = 1$ for all other days. In practice, when, $\tilde{A}$ and $\tilde{b}$ are formed explicitly and passed to the QR solver, flood-day rows appear with 10$\times$ more influence than ordinary rows, shifting the solution toward better coverage of rare extreme events.
+% ============================================================
+\section{Residuals and Prediction Intervals}
+
+\subsection{Validation Residuals}
+
+\begin{table}[h]
+\centering
+\caption{Training residual norm $\|A\hat{x} - b\|^2$ for each model along the forecast horizon.}
+\label{tab:residuals}
+\footnotesize
+\begin{tabularx}{\columnwidth}{@{}lXXXX@{}}
+\toprule
+\textbf{Model} & \textbf{t+1} & \textbf{t+2} & \textbf{t+3} & \textbf{t+4} \\
+\midrule
+Local    & 639.94 & 872.57 & 1279.13 & 1679.01 \\
+Upstream & 417.02 & 547.82 &  819.58 & 1160.11 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+For the training data, the upstream model has a smaller residual at every forecast horizon as compared to the local model as shown in Table~\ref{tab:residuals}. This suggests that the upstream gauge readings provide useful information about future downstream flow that local data cannot capture alone. The residual grows with horizon for both models, which is expected as predicting four days ahead is simply a harder problem than predicting one day ahead.
+
+After estimating $\hat{x}$ on the training set, the model is evaluated on a held-out validation set consisting of \emph{1461 daily observations}. For each validation day \(i\):
+\[
+  r_i = b_i - a_i^T \hat{x} \qquad (\text{log-space residual}).
+\]
+Positive residual suggests the model underpredicted; whereas negative means it overpredicted the flow values as shown in Table~\ref{tab:val_residuals}.
+The empirical distribution of $\{r_i\}$ captures how wrong the model tends to be, without any distributional assumption.
+
+\subsection{Prediction Intervals}
+
+For a new observation $a_{\text{new}}$, the point forecast is $\hat{y} = a_{\text{new}}^T \hat{x}$.
+The prediction interval at level $\alpha$ is:
+\[
+  \hat{y} + q_{\alpha/2} \;\leq\; y_{\text{new}} \;\leq\; \hat{y} + q_{1-\alpha/2},
+\]
+where $q_{\alpha/2}$ and $q_{1-\alpha/2}$ are the $(\alpha/2)$th and $(1-\alpha/2)$th
+empirical quantiles of the validation residuals.
+At $\alpha = 0.10$, this targets 90\% empirical coverage.
+
+\begin{remark}
+This is a marginal interval only: it uses the same quantiles regardless of input.
+It works well on average but may be too narrow for out-of-distribution flood events
+and too wide for low-flow days.
+\end{remark}
+
+\begin{table}[h]
+\centering
+\caption{Validation residual statistics in log-space. $q_5$ and $q_{95}$ are the
+  5th and 95th empirical percentiles and define the 90\% prediction interval bounds.}
+\label{tab:val_residuals}
+\footnotesize
+\begin{tabularx}{\columnwidth}{@{}lXXXXX@{}}
+\toprule
+\textbf{Model} & \textbf{Horizon} & \textbf{Mean} & \textbf{Std} & \textbf{q5} & \textbf{q95} \\
+\midrule
+Local OLS    & $t{+}1$ & $-0.008$ & $0.213$ & $-0.318$ & $0.392$ \\
+Local OLS    & $t{+}2$ & $-0.027$ & $0.366$ & $-0.556$ & $0.644$ \\
+Local OLS    & $t{+}3$ & $-0.061$ & $0.488$ & $-0.739$ & $0.858$ \\
+Local OLS    & $t{+}4$ & $-0.107$ & $0.584$ & $-0.925$ & $0.990$ \\
+\midrule
+Upstream OLS & $t{+}1$ & $\phantom{-}0.097$ & $0.180$ & $-0.125$ & $0.452$ \\
+Upstream OLS & $t{+}2$ & $\phantom{-}0.087$ & $0.291$ & $-0.284$ & $0.625$ \\
+Upstream OLS & $t{+}3$ & $\phantom{-}0.072$ & $0.405$ & $-0.457$ & $0.854$ \\
+Upstream OLS & $t{+}4$ & $\phantom{-}0.029$ & $0.508$ & $-0.648$ & $1.064$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ============================================================
+\section{Results}
+
+\subsection{Solver Agreement}
+
+Both the solvers, normal equation and QR factorization produce the same weight vector $\hat{x}$ to within within $10^{-10}$ for both the local and upstream models at all the forecast horizons. This confirms the implementation is correct and that the system is well-conditioned enough
+that numerical differences between solvers do not manifest at 64 bit precision.
+
+\subsection{Forecasting Performance}
+
+Table~\ref{tab:nse} reports the Nash-Sutcliffe Efficiency (NSE) and RMSE values for all the three models. The NSE measures the performance of the forecast, by comparing it with the observed streamflow relative to baseline, where the baseline is the performance forecast that assume future flow is same as the current flow. 
+
+The upstream model outperforms both baselines at every horizon, and the margin seems to widen as the lead time grows here. At $t{+}1$, local flow alone is already a strong predictor because the river does not change much in a single day across the historical data. But by $t{+}4$,
+local flow is essentially a stale reading, yet the upstream gauges still carry important information about the water wave that entered the network days earlier and has not yet arrived at the target site. That wave-routing signal indicates the fact that high
+flow measured at an upstream gauge today will appear at the downstream gauge in
+a few days. Adding lagged upstream gauge features helps the model anticipate downstream flow for the future, reducing four-day forecast error compared to using local information alone.
+
+\begin{table}[h]
+\centering
+\caption{Forecast performance on the test set showcasing evaluation metrics NSE and RMSE across horizons for the Baseline, Local, and Upstream OLS models.}
+\label{tab:nse}
+\footnotesize
+\begin{tabularx}{\columnwidth}{@{}lXXXX@{}}
+\toprule
+\multicolumn{5}{c}{\textbf{NSE all days}} \\
+\midrule
+\textbf{Model} & \textbf{$t{+}1$} & \textbf{$t{+}2$} & \textbf{$t{+}3$} & \textbf{$t{+}4$} \\
+\midrule
+Persistence  & $0.952$ & $0.828$ & $0.661$ & $0.478$ \\
+Local OLS    & $0.960$ & $0.861$ & $0.721$ & $0.561$ \\
+Upstream OLS & $\mathbf{0.983}$ & $\mathbf{0.947}$ & $\mathbf{0.894}$ & $\mathbf{0.817}$ \\
+\midrule
+
+\multicolumn{5}{c}{\textbf{NSE flood days only}} \\
+\midrule
+\textbf{Model} & \textbf{$t{+}1$} & \textbf{$t{+}2$} & \textbf{$t{+}3$} & \textbf{$t{+}4$} \\
+\midrule
+Persistence  & $0.807$ & $0.318$ & $-0.398$ & $-1.286$ \\
+Local OLS    & $0.843$ & $0.489$ & $-0.052$ & $-0.728$ \\
+Upstream OLS & $\mathbf{0.905}$ & $\mathbf{0.759}$ & $\mathbf{0.561}$ & $\mathbf{0.187}$ \\
+\midrule
+
+\multicolumn{5}{c}{\textbf{RMSE all days (cfs)}} \\
+\midrule
+\textbf{Model} & \textbf{$t{+}1$} & \textbf{$t{+}2$} & \textbf{$t{+}3$} & \textbf{$t{+}4$} \\
+\midrule
+Persistence  & $702$ & $1325$ & $1852$ & $2287$ \\
+Local OLS    & $641$ & $1191$ & $1680$ & $2099$ \\
+Upstream OLS & $\mathbf{417}$ & $\mathbf{737}$ & $\mathbf{1035}$ & $\mathbf{1354}$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+\subsection{Coverage Performance}
+
+Overall coverage tracks close to the 90\% target for both models, confirming that using validation residual quantiles as interval bounds provides a reliable calibration. The upstream model achieves this narrower intervals across all horizons as shown in Table~\ref{tab:intervals_all_days}. This indicates the upstream model fits better and leaves less uncertainty to cover. 
+
+But this performance doesnt exactly remain for rare extreme events like floods. The upstream intervals are wider than local ones $t{+}3$ and $t{+}4$ as seen in Table~\ref{tab:intervals_flood_days}. This remains a core limitation of marginal interval, where the same quantile is applied to every prediction regardless of the condition of the river flow, as it represents average error and not event conditional uncertainty.
+
+\begin{table}[h]
+\centering
+\caption{Normal Days: Empirical coverage and median interval width on the test set at 90\% target coverage, derived from the validation residual quantiles
+$q_5$ and $q_{95}$.}
+\label{tab:intervals_all_days}
+\footnotesize
+\begin{tabularx}{\columnwidth}{@{}lXXX@{}}
+\toprule
+\textbf{Model} & \textbf{Horizon} & \textbf{Coverage} & \textbf{Median width (cfs)} \\
+\midrule
+Local OLS    & $t{+}1$ & $0.887$ & $778$ \\
+Local OLS    & $t{+}2$ & $0.895$ & $1{,}402$ \\
+Local OLS    & $t{+}3$ & $0.892$ & $2{,}098$ \\
+Local OLS    & $t{+}4$ & $0.886$ & $2{,}698$ \\
+\midrule
+Upstream OLS & $t{+}1$ & $0.822$ & $686$ \\
+Upstream OLS & $t{+}2$ & $0.861$ & $1{,}143$ \\
+Upstream OLS & $t{+}3$ & $0.887$ & $1{,}847$ \\
+Upstream OLS & $t{+}4$ & $0.903$ & $2{,}697$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Flood Days: Empirical coverage and median interval width on the test set at 90\% target coverage, derived from the validation residual quantiles
+$q_5$ and $q_{95}$.}
+\label{tab:intervals_flood_days}
+\footnotesize
+\begin{tabularx}{\columnwidth}{@{}lXXX@{}}
+\toprule
+\textbf{Model} & \textbf{Horizon} & \textbf{Coverage} & \textbf{Median width (cfs)} \\
+\midrule
+Local OLS    & $t{+}1$ & $0.987$ & $8{,}595$ \\
+Local OLS    & $t{+}2$ & $0.974$ & $15{,}334$ \\
+Local OLS    & $t{+}3$ & $0.947$ & $20{,}374$ \\
+Local OLS    & $t{+}4$ & $0.892$ & $22{,}457$ \\
+\midrule
+Upstream OLS & $t{+}1$ & $0.935$ & $8{,}179$ \\
+Upstream OLS & $t{+}2$ & $0.987$ & $12{,}930$ \\
+Upstream OLS & $t{+}3$ & $0.987$ & $21{,}134$ \\
+Upstream OLS & $t{+}4$ & $0.973$ & $26{,}845$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ============================================================
+\section{QR Feature Attribution}
+
+The QR factorization provides a clean way to attribute the target variance to individual
+features without double-counting correlated predictors.
+Factor $A = QR$ and define the coefficient vector:
+\[
+  c = Q^T b \in \mathbb{R}^p.
+\]
+Since $Q$ has orthonormal columns, $\|c\|^2 = \|Q^Tb\|^2$ equals the portion of $\|b\|^2$
+explained by the column space of $A$. By Pythagoras, $c_i^2$ is the contribution of the
+$i$-th orthogonalized direction to the total explained variance:
+\[
+  s_i = \frac{c_i^2}{\sum_{j=1}^p c_j^2} \in [0,1], \qquad \sum_{i=1}^p s_i = 1.
+\]
+This is a true variance decomposition as each $s_i$ is the marginal share attributable to
+direction $i$ after the previous directions have been accounted for.
+
+The first entry ($i = 1$) corresponds to the bias column and is discarded for interpretation. The remaining $s_i$ are renormalized to sum to 1 and reported as the feature importance bar chart. The attribution ordering depends on the column ordering in $A$ as QR is not permutation-invariant, but the aggregate shares by feature group (local flow, upstream flow, precipitation) are stable.
+
+The flow value at the target gauge is the single strongest predictor of near-future flow under normal conditions as demonstrated in Table~\ref{tab:qr_contrib}, which is as expected. The reported observation is its share falls steadily from 95.9\% at $t{+}1$ to 87.0\% at $t{+}4$, and that slack is shifted to the first-in-the-network upstream gauge 02081500. Its growing contribution at longer leads directly reflects the physics of flood wave propagation, a surge recorded there today arrives at the target site in approximately four days.
+
+\begin{table}[h]
+\centering
+\caption{Top 5 QR variance shares (\%) for each horizon in the upstream model, excluding the bias
+  term. Routing lag indicates how many days upstream flow takes to reach the target gauge. (Remaining features each contribute $<$0.5\% and are omitted).}
+\label{tab:qr_contrib}
+\footnotesize
+\begin{tabularx}{\columnwidth}{@{}Xcccc@{}}
+\toprule
+\textbf{Feature} & \textbf{$t{+}1$} & \textbf{$t{+}2$} & \textbf{$t{+}3$} & \textbf{$t{+}4$} \\
+\midrule
+Local flow (target gauge)        & 95.9 & 92.9 & 89.3 & 87.0 \\
+Gauge 02081500 \small(4-day lag) &  0.8 &  1.8 &  3.3 &  4.5 \\
+Daily precipitation              &  0.6 &  1.8 &  2.8 &  3.5 \\
+Gauge 02082585 \small(1-day lag) &  0.9 &  1.6 &  1.7 &  1.4 \\
+Gauge 02081747 \small(3-day lag) &   --- &  0.5 &  0.8 &   --- \\
+Gauge 02082770 \small(3-day lag) &   --- &   --- &   --- &  1.0 \\
+Gauge 02083500 \small(1-day lag) &  0.9 &   --- &   --- &   --- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ============================================================
+\section{Conclusion}
+
+This project framed multi-day flood forecasting as a linear least-squares problem and used it as a way to connect the linear system modeling methods to real world streamflow sensor data. The mathematical solvers produce similar fitted coefficients, but differ in numerical behavior. 
+
+The results demonstrate that the choice of objective matters as well, when flood days are weighted more heavily, the fitted model shifts toward better performance during high-flow periods, but this could come at some cost to normal flow day behavior. The residual based prediction intervals provide a simple way to quantify uncertainty without assuming a specific error distribution.
+
+The model captures useful relationships between lagged upstream gauges and downstream flow, but would fail to represent non-linear flood processes such as backwater effects, dam operations or the threshold behavior during rare tail end events. Future work could use non linear or more sequence based models while maintaining the structure of input and output features. 
+
+
+\bibliographystyle{ieeetr}
+\bibliography{references}
+
+\end{document}
